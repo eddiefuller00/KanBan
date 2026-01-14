@@ -16,16 +16,37 @@ const taskSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true },
     description: { type: String, default: "", trim: true },
     status: { type: String, enum: STATUSES, default: "todo" },
+    dueDate: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
 const Task = mongoose.model("Task", taskSchema);
 
+const dueDateSchema = z.preprocess(
+  (value) => {
+    if (value === "" || value === null) {
+      return null;
+    }
+    return value;
+  },
+  z
+    .union([
+      z
+        .string()
+        .refine((value) => !Number.isNaN(Date.parse(value)), {
+          message: "Invalid due date",
+        }),
+      z.null(),
+    ])
+    .optional()
+);
+
 const createTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
   status: z.enum(STATUSES).optional(),
+  dueDate: dueDateSchema,
 });
 
 const updateTaskSchema = z
@@ -33,6 +54,7 @@ const updateTaskSchema = z
     title: z.string().min(1).optional(),
     description: z.string().optional(),
     status: z.enum(STATUSES).optional(),
+    dueDate: dueDateSchema,
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field must be provided",
@@ -43,6 +65,7 @@ const toClientTask = (task) => ({
   title: task.title,
   description: task.description || "",
   status: task.status,
+  dueDate: task.dueDate ? task.dueDate.toISOString() : null,
   createdAt: task.createdAt,
   updatedAt: task.updatedAt,
 });
@@ -62,6 +85,7 @@ app.post("/tasks", async (req, res) => {
     title: parsed.data.title,
     description: parsed.data.description || "",
     status: parsed.data.status || "todo",
+    dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
   });
 
   res.status(201).json(toClientTask(task));
@@ -78,7 +102,14 @@ app.put("/tasks/:id", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
-  const task = await Task.findByIdAndUpdate(id, parsed.data, {
+  const updateData = { ...parsed.data };
+  if ("dueDate" in parsed.data) {
+    updateData.dueDate = parsed.data.dueDate
+      ? new Date(parsed.data.dueDate)
+      : null;
+  }
+
+  const task = await Task.findByIdAndUpdate(id, updateData, {
     new: true,
     runValidators: true,
   });

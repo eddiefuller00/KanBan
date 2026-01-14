@@ -8,6 +8,7 @@ type Task = {
   title: string;
   description: string;
   status: TaskStatus;
+  dueDate: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -16,12 +17,22 @@ type TaskDraft = {
   title: string;
   description: string;
   status: TaskStatus;
+  dueDate: string;
 };
+
+type ThemeKey = "sunset" | "ocean" | "forest" | "nord";
 
 const STATUSES: Array<{ key: TaskStatus; label: string; hint: string }> = [
   { key: "todo", label: "To-Do", hint: "Gather the next moves" },
   { key: "in-progress", label: "In Progress", hint: "Make it real" },
   { key: "done", label: "Done", hint: "Wrap and ship" },
+];
+
+const THEMES: Array<{ key: ThemeKey; label: string }> = [
+  { key: "sunset", label: "Sunset" },
+  { key: "ocean", label: "Ocean" },
+  { key: "forest", label: "Forest" },
+  { key: "nord", label: "Nord" },
 ];
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -30,6 +41,7 @@ const emptyDraft: TaskDraft = {
   title: "",
   description: "",
   status: "todo",
+  dueDate: "",
 };
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -38,10 +50,36 @@ const statusLabels: Record<TaskStatus, string> = {
   done: "Done",
 };
 
+const toDateInputValue = (value: string | null) => {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const formatDueDate = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Invalid date";
+  }
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+};
+
 const toTaskDraft = (task: Task): TaskDraft => ({
   title: task.title,
   description: task.description || "",
   status: task.status,
+  dueDate: toDateInputValue(task.dueDate),
 });
 
 const BoardColumn = ({
@@ -96,7 +134,12 @@ const BoardColumn = ({
               {task.description ? <p>{task.description}</p> : null}
             </div>
             <div className="task__meta">
-              <span>{statusLabels[task.status]}</span>
+              <div className="task__tags">
+                <span className="task__status">{statusLabels[task.status]}</span>
+                {task.dueDate ? (
+                  <span className="task__due">Due {formatDueDate(task.dueDate)}</span>
+                ) : null}
+              </div>
               <div className="task__actions">
                 <button type="button" onClick={() => onEdit(task)}>
                   Edit
@@ -169,6 +212,16 @@ const TaskModal = ({
             />
           </label>
           <label>
+            Due date
+            <input
+              type="date"
+              value={draft.dueDate}
+              onChange={(event) =>
+                onChange({ ...draft, dueDate: event.target.value })
+              }
+            />
+          </label>
+          <label>
             Status
             <select
               value={draft.status}
@@ -205,6 +258,18 @@ function App() {
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [theme, setTheme] = useState<ThemeKey>(() => {
+    const saved = localStorage.getItem("kanban-theme");
+    if (saved && THEMES.some((item) => item.key === saved)) {
+      return saved as ThemeKey;
+    }
+    return "sunset";
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("kanban-theme", theme);
+  }, [theme]);
 
   const groupedTasks = useMemo(() => {
     return STATUSES.reduce<Record<TaskStatus, Task[]>>((acc, status) => {
@@ -269,6 +334,7 @@ function App() {
             title: draft.title.trim(),
             description: draft.description.trim(),
             status: draft.status,
+            dueDate: draft.dueDate ? draft.dueDate : null,
           }),
         }
       );
@@ -346,6 +412,19 @@ function App() {
           </p>
         </div>
         <div className="header__actions">
+          <label className="theme-picker">
+            Theme
+            <select
+              value={theme}
+              onChange={(event) => setTheme(event.target.value as ThemeKey)}
+            >
+              {THEMES.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button type="button" onClick={openCreate}>
             New task
           </button>

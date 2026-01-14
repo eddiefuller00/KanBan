@@ -34,25 +34,38 @@ h1 {
 
 .header__actions {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 1rem;
+}
+
+.theme-picker {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--ink-muted);
+}
+
+.theme-picker select {
+  min-width: 140px;
 }
 
 button {
   border: none;
-  background: var(--sunset);
-  color: #1f120a;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
   border-radius: 999px;
   padding: 0.75rem 1.4rem;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
-  box-shadow: 0 12px 30px rgba(250, 189, 111, 0.4);
+  box-shadow: 0 12px 30px var(--accent-glow);
 }
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 18px 35px rgba(250, 189, 111, 0.5);
+  box-shadow: 0 18px 35px var(--accent-glow);
 }
 
 button:disabled {
@@ -154,6 +167,31 @@ button.ghost {
   justify-content: space-between;
   font-size: 0.85rem;
   color: var(--ink-muted);
+}
+
+.task__tags {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.task__status,
+.task__due {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(32, 27, 20, 0.08);
+  color: var(--ink);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.task__due {
+  background: rgba(246, 211, 148, 0.6);
+  color: #5f4016;
 }
 
 .task__actions {
@@ -306,6 +344,10 @@ textarea {
 
   .app__header {
     flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .header__actions {
     align-items: flex-start;
   }
 }
