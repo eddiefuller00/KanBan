@@ -10,6 +10,11 @@ app.use(cors());
 app.use(express.json());
 
 const STATUSES = ["todo", "in-progress", "done"];
+const STATUS_LABELS = {
+  todo: "To-Do",
+  "in-progress": "In Progress",
+  done: "Done",
+};
 
 const taskSchema = new mongoose.Schema(
   {
@@ -17,6 +22,20 @@ const taskSchema = new mongoose.Schema(
     description: { type: String, default: "", trim: true },
     status: { type: String, enum: STATUSES, default: "todo" },
     dueDate: { type: Date, default: null },
+    activities: {
+      type: [
+        {
+          type: {
+            type: String,
+            enum: ["create", "update", "status"],
+            required: true,
+          },
+          message: { type: String, required: true },
+          at: { type: Date, required: true },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );
@@ -66,9 +85,16 @@ const toClientTask = (task) => ({
   description: task.description || "",
   status: task.status,
   dueDate: task.dueDate ? task.dueDate.toISOString() : null,
+  activities: (task.activities || []).map((activity) => ({
+    type: activity.type,
+    message: activity.message,
+    at: activity.at.toISOString(),
+  })),
   createdAt: task.createdAt,
   updatedAt: task.updatedAt,
 });
+
+const formatActivityDate = (date) => date.toISOString().slice(0, 10);
 
 app.get("/tasks", async (req, res) => {
   const tasks = await Task.find().sort({ createdAt: 1 });
@@ -86,6 +112,13 @@ app.post("/tasks", async (req, res) => {
     description: parsed.data.description || "",
     status: parsed.data.status || "todo",
     dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
+    activities: [
+      {
+        type: "create",
+        message: "Task created",
+        at: new Date(),
+      },
+    ],
   });
 
   res.status(201).json(toClientTask(task));
@@ -102,20 +135,67 @@ app.put("/tasks/:id", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
-  const updateData = { ...parsed.data };
-  if ("dueDate" in parsed.data) {
-    updateData.dueDate = parsed.data.dueDate
-      ? new Date(parsed.data.dueDate)
-      : null;
-  }
-
-  const task = await Task.findByIdAndUpdate(id, updateData, {
-    new: true,
-    runValidators: true,
-  });
-
+  const task = await Task.findById(id);
   if (!task) {
     return res.status(404).json({ error: "Task not found" });
+  }
+
+  let hasChanges = false;
+
+  if ("title" in parsed.data && parsed.data.title !== task.title) {
+    task.title = parsed.data.title;
+    task.activities.push({
+      type: "update",
+      message: "Title updated",
+      at: new Date(),
+    });
+    hasChanges = true;
+  }
+
+  if (
+    "description" in parsed.data &&
+    parsed.data.description !== task.description
+  ) {
+    task.description = parsed.data.description || "";
+    task.activities.push({
+      type: "update",
+      message: "Description updated",
+      at: new Date(),
+    });
+    hasChanges = true;
+  }
+
+  if ("status" in parsed.data && parsed.data.status !== task.status) {
+    task.status = parsed.data.status;
+    task.activities.push({
+      type: "status",
+      message: `Moved to ${STATUS_LABELS[task.status]}`,
+      at: new Date(),
+    });
+    hasChanges = true;
+  }
+
+  if ("dueDate" in parsed.data) {
+    const nextDueDate = parsed.data.dueDate
+      ? new Date(parsed.data.dueDate)
+      : null;
+    const currentTime = task.dueDate ? task.dueDate.getTime() : null;
+    const nextTime = nextDueDate ? nextDueDate.getTime() : null;
+    if (currentTime !== nextTime) {
+      task.dueDate = nextDueDate;
+      task.activities.push({
+        type: "update",
+        message: nextDueDate
+          ? `Due date set to ${formatActivityDate(nextDueDate)}`
+          : "Due date cleared",
+        at: new Date(),
+      });
+      hasChanges = true;
+    }
+  }
+
+  if (hasChanges) {
+    await task.save();
   }
 
   res.json(toClientTask(task));
