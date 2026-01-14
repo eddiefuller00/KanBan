@@ -21,3 +21,24 @@ npm run dev:server
 ```
 npm run dev
 ```
+
+
+## Run MongoDB Locally
+
+macOS (Homebrew):
+```
+brew tap mongodb/brew
+brew install mongodb-community@7.0
+brew services start mongodb-community@7.0
+```
+
+Linux (systemd):
+```
+sudo systemctl start mongod
+sudo systemctl status mongod
+```
+
+Docker (any OS):
+```
+docker run --name kanban-mongo -p 27017:27017 -d mongo:7
+```
