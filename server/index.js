@@ -9,18 +9,25 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const STATUSES = ["todo", "in-progress", "done"];
-const STATUS_LABELS = {
-  todo: "To-Do",
-  "in-progress": "In Progress",
-  done: "Done",
-};
+const DEFAULT_COLUMNS = [
+  { key: "todo", label: "To-Do" },
+  { key: "in-progress", label: "In Progress" },
+  { key: "done", label: "Done" },
+];
+
+const columnSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, unique: true, trim: true },
+    label: { type: String, required: true, trim: true },
+  },
+  { timestamps: true }
+);
 
 const taskSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true },
     description: { type: String, default: "", trim: true },
-    status: { type: String, enum: STATUSES, default: "todo" },
+    status: { type: String, required: true },
     dueDate: { type: Date, default: null },
     activities: {
       type: [
@@ -40,6 +47,7 @@ const taskSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const Column = mongoose.model("Column", columnSchema);
 const Task = mongoose.model("Task", taskSchema);
 
 const dueDateSchema = z.preprocess(
@@ -64,7 +72,7 @@ const dueDateSchema = z.preprocess(
 const createTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
-  status: z.enum(STATUSES).optional(),
+  status: z.string().min(1).optional(),
   dueDate: dueDateSchema,
 });
 
@@ -72,12 +80,16 @@ const updateTaskSchema = z
   .object({
     title: z.string().min(1).optional(),
     description: z.string().optional(),
-    status: z.enum(STATUSES).optional(),
+    status: z.string().min(1).optional(),
     dueDate: dueDateSchema,
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field must be provided",
   });
+
+const createColumnSchema = z.object({
+  label: z.string().min(1),
+});
 
 const toClientTask = (task) => ({
   id: task._id.toString(),
@@ -94,7 +106,66 @@ const toClientTask = (task) => ({
   updatedAt: task.updatedAt,
 });
 
+const toClientColumn = (column) => ({
+  key: column.key,
+  label: column.label,
+});
+
 const formatActivityDate = (date) => date.toISOString().slice(0, 10);
+
+const slugify = (label) =>
+  label
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "")
+    .slice(0, 40) || "column";
+
+const ensureDefaultColumns = async () => {
+  const count = await Column.countDocuments();
+  if (count > 0) {
+    return;
+  }
+  await Column.insertMany(DEFAULT_COLUMNS);
+};
+
+const getColumns = async () => Column.find().sort({ createdAt: 1 });
+
+const getColumnMap = async () => {
+  const columns = await getColumns();
+  const map = new Map();
+  columns.forEach((column) => {
+    map.set(column.key, column.label);
+  });
+  return { columns, map };
+};
+
+const ensureUniqueKey = async (baseKey) => {
+  let key = baseKey;
+  let suffix = 2;
+  while (await Column.exists({ key })) {
+    key = `${baseKey}-${suffix}`;
+    suffix += 1;
+  }
+  return key;
+};
+
+app.get("/columns", async (req, res) => {
+  const columns = await getColumns();
+  res.json(columns.map(toClientColumn));
+});
+
+app.post("/columns", async (req, res) => {
+  const parsed = createColumnSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+
+  const baseKey = slugify(parsed.data.label);
+  const key = await ensureUniqueKey(baseKey);
+  const column = await Column.create({ key, label: parsed.data.label.trim() });
+  res.status(201).json(toClientColumn(column));
+});
 
 app.get("/tasks", async (req, res) => {
   const tasks = await Task.find().sort({ createdAt: 1 });
@@ -107,10 +178,17 @@ app.post("/tasks", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
+  const { columns, map } = await getColumnMap();
+  const defaultStatus = columns[0]?.key || "todo";
+  const statusKey = parsed.data.status || defaultStatus;
+  if (!map.has(statusKey)) {
+    return res.status(400).json({ error: "Invalid column" });
+  }
+
   const task = await Task.create({
     title: parsed.data.title,
     description: parsed.data.description || "",
-    status: parsed.data.status || "todo",
+    status: statusKey,
     dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
     activities: [
       {
@@ -166,10 +244,14 @@ app.put("/tasks/:id", async (req, res) => {
   }
 
   if ("status" in parsed.data && parsed.data.status !== task.status) {
+    const { map } = await getColumnMap();
+    if (!map.has(parsed.data.status)) {
+      return res.status(400).json({ error: "Invalid column" });
+    }
     task.status = parsed.data.status;
     task.activities.push({
       type: "status",
-      message: `Moved to ${STATUS_LABELS[task.status]}`,
+      message: `Moved to ${map.get(task.status)}`,
       at: new Date(),
     });
     hasChanges = true;
@@ -220,7 +302,8 @@ const mongoUrl = process.env.MONGO_URL || "mongodb://127.0.0.1:27017/kanban";
 
 mongoose
   .connect(mongoUrl)
-  .then(() => {
+  .then(async () => {
+    await ensureDefaultColumns();
     app.listen(port, () => {
       console.log(`API running on http://localhost:${port}`);
     });

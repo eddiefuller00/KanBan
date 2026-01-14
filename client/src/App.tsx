@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
-type TaskStatus = "todo" | "in-progress" | "done";
+type ColumnKey = string;
+
+type Column = {
+  key: string;
+  label: string;
+  hint?: string;
+};
 
 type TaskActivity = {
   type: "create" | "update" | "status";
@@ -13,7 +19,7 @@ type Task = {
   id: string;
   title: string;
   description: string;
-  status: TaskStatus;
+  status: ColumnKey;
   dueDate: string | null;
   activities: TaskActivity[];
   createdAt: string;
@@ -23,19 +29,27 @@ type Task = {
 type TaskDraft = {
   title: string;
   description: string;
-  status: TaskStatus;
+  status: ColumnKey;
   dueDate: string;
 };
 
 type ThemeKey = "sunset" | "ocean" | "forest" | "nord" | "custom";
 
-type VisibleCounts = Record<TaskStatus, number>;
+type BoardStyle = "cozy" | "compact" | "focus";
 
-const STATUSES: Array<{ key: TaskStatus; label: string; hint: string }> = [
+type VisibleCounts = Record<ColumnKey, number>;
+
+const DEFAULT_COLUMNS: Column[] = [
   { key: "todo", label: "To-Do", hint: "Gather the next moves" },
   { key: "in-progress", label: "In Progress", hint: "Make it real" },
   { key: "done", label: "Done", hint: "Wrap and ship" },
 ];
+
+const COLUMN_HINTS: Record<string, string> = {
+  todo: "Gather the next moves",
+  "in-progress": "Make it real",
+  done: "Wrap and ship",
+};
 
 const THEMES: Array<{ key: ThemeKey; label: string }> = [
   { key: "sunset", label: "Sunset" },
@@ -43,6 +57,12 @@ const THEMES: Array<{ key: ThemeKey; label: string }> = [
   { key: "forest", label: "Forest" },
   { key: "nord", label: "Nord" },
   { key: "custom", label: "Custom" },
+];
+
+const BOARD_STYLES: Array<{ key: BoardStyle; label: string }> = [
+  { key: "cozy", label: "Cozy" },
+  { key: "compact", label: "Compact" },
+  { key: "focus", label: "Focus" },
 ];
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -55,12 +75,6 @@ const emptyDraft: TaskDraft = {
   description: "",
   status: "todo",
   dueDate: "",
-};
-
-const statusLabels: Record<TaskStatus, string> = {
-  todo: "To-Do",
-  "in-progress": "In Progress",
-  done: "Done",
 };
 
 const toDateInputValue = (value: string | null) => {
@@ -86,6 +100,35 @@ const formatDueDate = (value: string) => {
     month: "short",
     day: "numeric",
   });
+};
+
+const useAnimatedCount = (value: number) => {
+  const previous = useRef(value);
+  const [display, setDisplay] = useState(value);
+
+  useEffect(() => {
+    const start = previous.current;
+    const end = value;
+    previous.current = value;
+    if (start === end) {
+      return;
+    }
+    const duration = 320;
+    let frame = 0;
+    const startTime = performance.now();
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - startTime) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplay(Math.round(start + (end - start) * eased));
+      if (progress < 1) {
+        frame = requestAnimationFrame(step);
+      }
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [value]);
+
+  return display;
 };
 
 const formatActivityTime = (value: string) => {
@@ -143,6 +186,12 @@ const getContrastingInk = (hex: string) => {
   return luminance > 0.7 ? "#1f120a" : "#fef6ef";
 };
 
+const applyColumnHints = (columns: Column[]) =>
+  columns.map((column) => ({
+    ...column,
+    hint: COLUMN_HINTS[column.key] || column.hint,
+  }));
+
 const toTaskDraft = (task: Task): TaskDraft => ({
   title: task.title,
   description: task.description || "",
@@ -159,6 +208,8 @@ const BoardColumn = ({
   draggingId,
   totalCount,
   hasMore,
+  columns,
+  columnLabels,
   onDropTask,
   onDragOverStatus,
   onDragStart,
@@ -172,19 +223,21 @@ const BoardColumn = ({
   editingId,
   editingDraft,
 }: {
-  status: TaskStatus;
+  status: ColumnKey;
   title: string;
-  hint: string;
+  hint?: string;
   tasks: Task[];
   isDragOver: boolean;
   draggingId: string | null;
   totalCount: number;
   hasMore: boolean;
-  onDropTask: (id: string, status: TaskStatus) => void;
-  onDragOverStatus: (status: TaskStatus | null) => void;
+  columns: Column[];
+  columnLabels: Record<string, string>;
+  onDropTask: (id: string, status: ColumnKey) => void;
+  onDragOverStatus: (status: ColumnKey | null) => void;
   onDragStart: (id: string) => void;
   onDragEnd: () => void;
-  onLoadMore: (status: TaskStatus) => void;
+  onLoadMore: (status: ColumnKey) => void;
   onEdit: (task: Task) => void;
   onCancelEdit: () => void;
   onChangeDraft: (draft: TaskDraft) => void;
@@ -193,6 +246,15 @@ const BoardColumn = ({
   editingId: string | null;
   editingDraft: TaskDraft;
 }) => {
+  const animatedCount = useAnimatedCount(totalCount);
+  const [isBumping, setIsBumping] = useState(false);
+
+  useEffect(() => {
+    setIsBumping(true);
+    const timer = window.setTimeout(() => setIsBumping(false), 220);
+    return () => window.clearTimeout(timer);
+  }, [totalCount]);
+
   return (
     <section
       className={`column${isDragOver ? " column--dragover" : ""}`}
@@ -218,9 +280,9 @@ const BoardColumn = ({
       <header className="column__header">
         <div>
           <h2>{title}</h2>
-          <p>{hint}</p>
+          {hint ? <p>{hint}</p> : null}
         </div>
-        <span className="column__count">{totalCount}</span>
+        <span className={`column__count${isBumping ? " column__count--bump" : ""}`}>{animatedCount}</span>
       </header>
       <div
         className="column__stack"
@@ -302,11 +364,11 @@ const BoardColumn = ({
                         onChange={(event) =>
                           onChangeDraft({
                             ...editingDraft,
-                            status: event.target.value as TaskStatus,
+                            status: event.target.value as ColumnKey,
                           })
                         }
                       >
-                        {STATUSES.map((statusOption) => (
+                        {columns.map((statusOption) => (
                           <option key={statusOption.key} value={statusOption.key}>
                             {statusOption.label}
                           </option>
@@ -357,7 +419,7 @@ const BoardColumn = ({
                   <div className="task__meta">
                     <div className="task__tags">
                       <span className="task__status">
-                        {statusLabels[task.status]}
+                        {columnLabels[task.status] || task.status}
                       </span>
                       {task.dueDate ? (
                         <span className="task__due">
@@ -383,6 +445,7 @@ const TaskModal = ({
   open,
   draft,
   isSaving,
+  columns,
   onClose,
   onChange,
   onSave,
@@ -390,6 +453,7 @@ const TaskModal = ({
   open: boolean;
   draft: TaskDraft;
   isSaving: boolean;
+  columns: Column[];
   onClose: () => void;
   onChange: (next: TaskDraft) => void;
   onSave: () => void;
@@ -444,10 +508,10 @@ const TaskModal = ({
             <select
               value={draft.status}
               onChange={(event) =>
-                onChange({ ...draft, status: event.target.value as TaskStatus })
+                onChange({ ...draft, status: event.target.value as ColumnKey })
               }
             >
-              {STATUSES.map((status) => (
+              {columns.map((status) => (
                 <option key={status.key} value={status.key}>
                   {status.label}
                 </option>
@@ -521,15 +585,26 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
-  const [visibleCounts, setVisibleCounts] = useState<VisibleCounts>(() => ({
-    todo: INITIAL_BATCH,
-    "in-progress": INITIAL_BATCH,
-    done: INITIAL_BATCH,
-  }));
+  const [dragOverStatus, setDragOverStatus] = useState<ColumnKey | null>(null);
+  const [visibleCounts, setVisibleCounts] = useState<VisibleCounts>(() =>
+    DEFAULT_COLUMNS.reduce<Record<string, number>>((acc, column) => {
+      acc[column.key] = INITIAL_BATCH;
+      return acc;
+    }, {})
+  );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState<TaskDraft>(emptyDraft);
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
+  const [columns, setColumns] = useState<Column[]>(DEFAULT_COLUMNS);
+  const [newColumnLabel, setNewColumnLabel] = useState("");
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [boardStyle, setBoardStyle] = useState<BoardStyle>(() => {
+    const saved = localStorage.getItem("kanban-board-style");
+    if (saved && BOARD_STYLES.some((item) => item.key === saved)) {
+      return saved as BoardStyle;
+    }
+    return "cozy";
+  });
   const [theme, setTheme] = useState<ThemeKey>(() => {
     const saved = localStorage.getItem("kanban-theme");
     if (saved && THEMES.some((item) => item.key === saved)) {
@@ -553,9 +628,31 @@ function App() {
   });
 
   useEffect(() => {
+    document.documentElement.dataset.boardStyle = boardStyle;
+    localStorage.setItem("kanban-board-style", boardStyle);
+  }, [boardStyle]);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("kanban-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!isMenuOpen) {
+      return;
+    }
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [isMenuOpen]);
+
+
 
   useEffect(() => {
     if (theme !== "custom") {
@@ -579,24 +676,38 @@ function App() {
   }, [customColors, theme]);
 
   const groupedTasks = useMemo(() => {
-    return STATUSES.reduce<Record<TaskStatus, Task[]>>((acc, status) => {
-      acc[status.key] = tasks.filter((task) => task.status === status.key);
+    const grouped: Record<string, Task[]> = {};
+    columns.forEach((column) => {
+      grouped[column.key] = [];
+    });
+    tasks.forEach((task) => {
+      if (!grouped[task.status]) {
+        grouped[task.status] = [];
+      }
+      grouped[task.status].push(task);
+    });
+    return grouped;
+  }, [tasks, columns]);
+
+  const columnLabels = useMemo(() => {
+    return columns.reduce<Record<string, string>>((acc, column) => {
+      acc[column.key] = column.label;
       return acc;
-    }, {} as Record<TaskStatus, Task[]>);
-  }, [tasks]);
+    }, {} as Record<string, string>);
+  }, [columns]);
 
   useEffect(() => {
     setVisibleCounts((prev) => {
-      const next = { ...prev };
-      STATUSES.forEach((status) => {
-        const total = groupedTasks[status.key]?.length ?? 0;
-        const current = prev[status.key] ?? INITIAL_BATCH;
+      const next: Record<string, number> = { ...prev };
+      columns.forEach((column) => {
+        const total = groupedTasks[column.key]?.length ?? 0;
+        const current = prev[column.key] ?? INITIAL_BATCH;
         const baseline = Math.min(INITIAL_BATCH, total);
-        next[status.key] = Math.min(Math.max(current, baseline), total);
+        next[column.key] = Math.min(Math.max(current, baseline), total);
       });
       return next;
     });
-  }, [groupedTasks]);
+  }, [groupedTasks, columns]);
 
   useEffect(() => {
     if (editingId && !tasks.some((task) => task.id === editingId)) {
@@ -605,15 +716,42 @@ function App() {
     }
   }, [editingId, tasks]);
 
-  const loadTasks = async () => {
+  useEffect(() => {
+    if (!columns.length) {
+      return;
+    }
+    const fallback = columns[0].key;
+    setDraft((prev) =>
+      columns.some((column) => column.key === prev.status)
+        ? prev
+        : { ...prev, status: fallback }
+    );
+    setEditingDraft((prev) =>
+      columns.some((column) => column.key === prev.status)
+        ? prev
+        : { ...prev, status: fallback }
+    );
+  }, [columns]);
+
+  const loadBoard = async () => {
     try {
       setIsLoading(true);
-      const response = await fetch(`${API_URL}/tasks`);
-      if (!response.ok) {
+      const [columnsResponse, tasksResponse] = await Promise.all([
+        fetch(`${API_URL}/columns`),
+        fetch(`${API_URL}/tasks`),
+      ]);
+      if (!columnsResponse.ok) {
+        throw new Error("Failed to load columns");
+      }
+      if (!tasksResponse.ok) {
         throw new Error("Failed to load tasks");
       }
-      const data: Task[] = await response.json();
-      setTasks(data);
+      const columnsData: Column[] = applyColumnHints(
+        await columnsResponse.json()
+      );
+      const tasksData: Task[] = await tasksResponse.json();
+      setColumns(columnsData.length ? columnsData : DEFAULT_COLUMNS);
+      setTasks(tasksData);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -623,11 +761,12 @@ function App() {
   };
 
   useEffect(() => {
-    loadTasks();
+    loadBoard();
   }, []);
 
   const openCreate = () => {
-    setDraft(emptyDraft);
+    const defaultStatus = columns[0]?.key || "todo";
+    setDraft({ ...emptyDraft, status: defaultStatus });
     setIsModalOpen(true);
   };
 
@@ -680,6 +819,29 @@ function App() {
     }
   };
 
+  const addColumn = async () => {
+    const label = newColumnLabel.trim();
+    if (!label) {
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/columns`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to add column");
+      }
+      const column: Column = applyColumnHints([await response.json()])[0];
+      setColumns((prev) => [...prev, column]);
+      setNewColumnLabel("");
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    }
+  };
+
   const saveInlineTask = async (id: string) => {
     if (!editingDraft.title.trim()) {
       setError("Title is required");
@@ -729,7 +891,7 @@ function App() {
     }
   };
 
-  const moveTask = async (id: string, status: TaskStatus) => {
+  const moveTask = async (id: string, status: ColumnKey) => {
     const previous = tasks;
     setTasks((prev) =>
       prev.map((task) => (task.id === id ? { ...task, status } : task))
@@ -762,7 +924,7 @@ function App() {
     setDragOverStatus(null);
   };
 
-  const handleLoadMore = (status: TaskStatus) => {
+  const handleLoadMore = (status: ColumnKey) => {
     setVisibleCounts((prev) => {
       const total = groupedTasks[status]?.length ?? 0;
       const current = prev[status] ?? INITIAL_BATCH;
@@ -776,6 +938,138 @@ function App() {
 
   return (
     <div className={`app${draggingId ? " app--dragging" : ""}`}>
+      <header className="topbar">
+        <div className="topbar__brand">
+          <span className="topbar__dot" aria-hidden="true" />
+          <span>Kanban</span>
+        </div>
+        <div className="topbar__actions">
+          <button type="button" onClick={openCreate}>
+            New task
+          </button>
+          <div className="action-menu">
+            <button
+              type="button"
+              className="ghost action-menu__trigger"
+              aria-haspopup="dialog"
+              aria-expanded={isMenuOpen}
+              aria-label="Open menu"
+              onClick={() => setIsMenuOpen(true)}
+            >
+              ...
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {isMenuOpen ? (
+        <div className="modal" role="dialog" aria-modal="true">
+          <div
+            className="modal__backdrop"
+            onClick={() => setIsMenuOpen(false)}
+          />
+          <div className="modal__panel modal__panel--settings">
+            <header>
+              <h2>Board settings</h2>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                Close
+              </button>
+            </header>
+            <div className="modal__content">
+              <div className="action-menu__section">
+                <span className="action-menu__title">Board style</span>
+                <div className="action-menu__options">
+                  {BOARD_STYLES.map((style) => (
+                    <button
+                      key={style.key}
+                      type="button"
+                      className={boardStyle === style.key ? "active" : undefined}
+                      onClick={() => setBoardStyle(style.key)}
+                    >
+                      {style.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="action-menu__section">
+                <span className="action-menu__title">Columns</span>
+                <div className="column-create">
+                  <input
+                    type="text"
+                    value={newColumnLabel}
+                    placeholder="New column name"
+                    onChange={(event) => setNewColumnLabel(event.target.value)}
+                  />
+                  <button type="button" onClick={addColumn}>
+                    Add
+                  </button>
+                </div>
+              </div>
+              <div className="action-menu__section">
+                <span className="action-menu__title">Theme</span>
+                <label className="theme-picker">
+                  Theme
+                  <select
+                    value={theme}
+                    onChange={(event) => setTheme(event.target.value as ThemeKey)}
+                  >
+                    {THEMES.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {theme === "custom" ? (
+                  <div className="theme-custom">
+                    <label>
+                      Primary
+                      <input
+                        type="color"
+                        value={customColors.primary}
+                        onChange={(event) =>
+                          setCustomColors({
+                            ...customColors,
+                            primary: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Secondary
+                      <input
+                        type="color"
+                        value={customColors.secondary}
+                        onChange={(event) =>
+                          setCustomColors({
+                            ...customColors,
+                            secondary: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <footer>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                Done
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+
       <header className="app__header">
         <div>
           <p className="eyebrow">Kanban Task Board</p>
@@ -784,56 +1078,6 @@ function App() {
             Drag tasks across your flow. Double-click a card to edit.
           </p>
         </div>
-        <div className="header__actions">
-          <div className="theme-controls">
-            <label className="theme-picker">
-              Theme
-              <select
-                value={theme}
-                onChange={(event) => setTheme(event.target.value as ThemeKey)}
-              >
-                {THEMES.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {theme === "custom" ? (
-              <div className="theme-custom">
-                <label>
-                  Primary
-                  <input
-                    type="color"
-                    value={customColors.primary}
-                    onChange={(event) =>
-                      setCustomColors({
-                        ...customColors,
-                        primary: event.target.value,
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  Secondary
-                  <input
-                    type="color"
-                    value={customColors.secondary}
-                    onChange={(event) =>
-                      setCustomColors({
-                        ...customColors,
-                        secondary: event.target.value,
-                      })
-                    }
-                  />
-                </label>
-              </div>
-            ) : null}
-          </div>
-          <button type="button" onClick={openCreate}>
-            New task
-          </button>
-        </div>
       </header>
 
       {error ? <div className="banner">{error}</div> : null}
@@ -841,22 +1085,24 @@ function App() {
         <div className="loading">Loading tasks...</div>
       ) : (
         <main className="board">
-          {STATUSES.map((status) => {
-            const visible = groupedTasks[status.key].slice(
+          {columns.map((column) => {
+            const visible = (groupedTasks[column.key] || []).slice(
               0,
-              visibleCounts[status.key]
+              visibleCounts[column.key] || INITIAL_BATCH
             );
             return (
               <BoardColumn
-                key={status.key}
-                status={status.key}
-                title={status.label}
-                hint={status.hint}
+                key={column.key}
+                status={column.key}
+                title={column.label}
+                hint={column.hint}
                 tasks={visible}
-                isDragOver={dragOverStatus === status.key}
+                isDragOver={dragOverStatus === column.key}
                 draggingId={draggingId}
-                totalCount={groupedTasks[status.key].length}
-                hasMore={visible.length < groupedTasks[status.key].length}
+                totalCount={(groupedTasks[column.key] || []).length}
+                hasMore={visible.length < (groupedTasks[column.key] || []).length}
+                columns={columns}
+                columnLabels={columnLabels}
                 onDropTask={moveTask}
                 onDragOverStatus={setDragOverStatus}
                 onDragStart={handleDragStart}
@@ -879,6 +1125,7 @@ function App() {
         open={isModalOpen}
         draft={draft}
         isSaving={isSaving}
+        columns={columns}
         onClose={closeModal}
         onChange={setDraft}
         onSave={saveTask}
