@@ -504,10 +504,24 @@ button.danger {
   gap: 0.8rem;
 }
 
+.task__edit-row label {
+  min-width: 0;
+}
+
+.task__edit-row input,
+.task__edit-row select {
+  min-width: 0;
+  width: 100%;
+}
+
 .task__edit-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
+}
+
+.task__edit-actions button {
+  flex: 1 1 120px;
 }
 
 .task--empty {
