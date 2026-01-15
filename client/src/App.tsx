@@ -210,6 +210,11 @@ const BoardColumn = ({
   hasMore,
   columns,
   columnLabels,
+  onOpenColumnSettings,
+  canMoveLeft,
+  canMoveRight,
+  onMoveLeft,
+  onMoveRight,
   onDropTask,
   onDragOverStatus,
   onDragStart,
@@ -233,6 +238,11 @@ const BoardColumn = ({
   hasMore: boolean;
   columns: Column[];
   columnLabels: Record<string, string>;
+  onOpenColumnSettings: () => void;
+  canMoveLeft: boolean;
+  canMoveRight: boolean;
+  onMoveLeft: () => void;
+  onMoveRight: () => void;
   onDropTask: (id: string, status: ColumnKey) => void;
   onDragOverStatus: (status: ColumnKey | null) => void;
   onDragStart: (id: string) => void;
@@ -282,7 +292,39 @@ const BoardColumn = ({
           <h2>{title}</h2>
           {hint ? <p>{hint}</p> : null}
         </div>
-        <span className={`column__count${isBumping ? " column__count--bump" : ""}`}>{animatedCount}</span>
+        <div className="column__meta">
+          <div className="column__nav">
+            <button
+              type="button"
+              onClick={onMoveLeft}
+              disabled={!canMoveLeft}
+              aria-label={`Move ${title} column left`}
+            >
+              ←
+            </button>
+            <button
+              type="button"
+              onClick={onMoveRight}
+              disabled={!canMoveRight}
+              aria-label={`Move ${title} column right`}
+            >
+              →
+            </button>
+          </div>
+          <span
+            className={`column__count${isBumping ? " column__count--bump" : ""}`}
+          >
+            {animatedCount}
+          </span>
+          <button
+            type="button"
+            className="column__action"
+            onClick={onOpenColumnSettings}
+            aria-label={`Edit ${title} column`}
+          >
+            •••
+          </button>
+        </div>
       </header>
       <div
         className="column__stack"
@@ -532,6 +574,89 @@ const TaskModal = ({
   );
 };
 
+const ColumnModal = ({
+  open,
+  column,
+  label,
+  migrateTo,
+  columns,
+  onClose,
+  onLabelChange,
+  onMigrateChange,
+  onRename,
+  onDelete,
+}: {
+  open: boolean;
+  column: Column | null;
+  label: string;
+  migrateTo: string;
+  columns: Column[];
+  onClose: () => void;
+  onLabelChange: (value: string) => void;
+  onMigrateChange: (value: string) => void;
+  onRename: () => void;
+  onDelete: () => void;
+}) => {
+  if (!open || !column) {
+    return null;
+  }
+
+  const availableTargets = columns.filter((item) => item.key !== column.key);
+
+  return (
+    <div className="modal" role="dialog" aria-modal="true">
+      <div className="modal__backdrop" onClick={onClose} />
+      <div className="modal__panel modal__panel--settings">
+        <header>
+          <h2>Edit column</h2>
+          <button type="button" className="ghost" onClick={onClose}>
+            Close
+          </button>
+        </header>
+        <div className="modal__content">
+          <label>
+            Column name
+            <input
+              value={label}
+              onChange={(event) => onLabelChange(event.target.value)}
+            />
+          </label>
+          <button type="button" onClick={onRename}>
+            Save name
+          </button>
+          <div className="action-menu__section">
+            <span className="action-menu__title">Delete column</span>
+            {availableTargets.length ? (
+              <>
+                <label>
+                  Move tasks to
+                  <select
+                    value={migrateTo}
+                    onChange={(event) => onMigrateChange(event.target.value)}
+                  >
+                    {availableTargets.map((item) => (
+                      <option key={item.key} value={item.key}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" className="danger" onClick={onDelete}>
+                  Delete column
+                </button>
+              </>
+            ) : (
+              <p className="activity__empty">
+                Add another column before deleting this one.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ConfirmModal = ({
   open,
   title,
@@ -597,6 +722,9 @@ function App() {
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
   const [columns, setColumns] = useState<Column[]>(DEFAULT_COLUMNS);
   const [newColumnLabel, setNewColumnLabel] = useState("");
+  const [columnModal, setColumnModal] = useState<Column | null>(null);
+  const [columnLabelDraft, setColumnLabelDraft] = useState("");
+  const [columnMigrateTo, setColumnMigrateTo] = useState("");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [boardStyle, setBoardStyle] = useState<BoardStyle>(() => {
     const saved = localStorage.getItem("kanban-board-style");
@@ -819,6 +947,70 @@ function App() {
     }
   };
 
+  const openColumnModal = (column: Column) => {
+    const fallback = columns.find((item) => item.key !== column.key);
+    setColumnModal(column);
+    setColumnLabelDraft(column.label);
+    setColumnMigrateTo(fallback?.key || "");
+  };
+
+  const renameColumn = async () => {
+    if (!columnModal) {
+      return;
+    }
+    const label = columnLabelDraft.trim();
+    if (!label) {
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/columns/${encodeURIComponent(columnModal.key)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to rename column");
+      }
+      const updated: Column = await response.json();
+      setColumns((prev) =>
+        prev.map((column) => (column.key === updated.key ? updated : column))
+      );
+      setColumnModal(updated);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    }
+  };
+
+  const deleteColumn = async () => {
+    if (!columnModal || !columnMigrateTo) {
+      return;
+    }
+    try {
+      const response = await fetch(
+        `${API_URL}/columns/${encodeURIComponent(
+          columnModal.key
+        )}?migrateTo=${encodeURIComponent(columnMigrateTo)}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok && response.status !== 204) {
+        throw new Error("Failed to delete column");
+      }
+      setColumns((prev) => prev.filter((col) => col.key !== columnModal.key));
+      setTasks((prev) =>
+        prev.map((task) =>
+          task.status === columnModal.key
+            ? { ...task, status: columnMigrateTo }
+            : task
+        )
+      );
+      setColumnModal(null);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    }
+  };
+
   const addColumn = async () => {
     const label = newColumnLabel.trim();
     if (!label) {
@@ -922,6 +1114,24 @@ function App() {
   const handleDragEnd = () => {
     setDraggingId(null);
     setDragOverStatus(null);
+  };
+
+            const moveColumn = (key: string, direction: "left" | "right") => {
+    setColumns((prev) => {
+      const index = prev.findIndex((col) => col.key === key);
+      if (index === -1) {
+        return prev;
+      }
+      const nextIndex = direction === "left" ? index - 1 : index + 1;
+      if (nextIndex < 0 || nextIndex >= prev.length) {
+        return prev;
+      }
+      const next = [...prev];
+      const swap = next[nextIndex];
+      next[nextIndex] = next[index];
+      next[index] = swap;
+      return next;
+    });
   };
 
   const handleLoadMore = (status: ColumnKey) => {
@@ -1085,7 +1295,7 @@ function App() {
         <div className="loading">Loading tasks...</div>
       ) : (
         <main className="board">
-          {columns.map((column) => {
+          {columns.map((column, index) => {
             const visible = (groupedTasks[column.key] || []).slice(
               0,
               visibleCounts[column.key] || INITIAL_BATCH
@@ -1103,6 +1313,11 @@ function App() {
                 hasMore={visible.length < (groupedTasks[column.key] || []).length}
                 columns={columns}
                 columnLabels={columnLabels}
+                onOpenColumnSettings={() => openColumnModal(column)}
+                canMoveLeft={index > 0}
+                canMoveRight={index < columns.length - 1}
+                onMoveLeft={() => moveColumn(column.key, "left")}
+                onMoveRight={() => moveColumn(column.key, "right")}
                 onDropTask={moveTask}
                 onDragOverStatus={setDragOverStatus}
                 onDragStart={handleDragStart}
@@ -1120,6 +1335,19 @@ function App() {
           })}
         </main>
       )}
+
+      <ColumnModal
+        open={Boolean(columnModal)}
+        column={columnModal}
+        label={columnLabelDraft}
+        migrateTo={columnMigrateTo}
+        columns={columns}
+        onClose={() => setColumnModal(null)}
+        onLabelChange={setColumnLabelDraft}
+        onMigrateChange={setColumnMigrateTo}
+        onRename={renameColumn}
+        onDelete={deleteColumn}
+      />
 
       <TaskModal
         open={isModalOpen}

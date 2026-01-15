@@ -91,6 +91,10 @@ const createColumnSchema = z.object({
   label: z.string().min(1),
 });
 
+const updateColumnSchema = z.object({
+  label: z.string().min(1),
+});
+
 const toClientTask = (task) => ({
   id: task._id.toString(),
   title: task.title,
@@ -165,6 +169,62 @@ app.post("/columns", async (req, res) => {
   const key = await ensureUniqueKey(baseKey);
   const column = await Column.create({ key, label: parsed.data.label.trim() });
   res.status(201).json(toClientColumn(column));
+});
+
+app.put("/columns/:key", async (req, res) => {
+  const { key } = req.params;
+  const parsed = updateColumnSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+
+  const columns = await getColumns();
+  const column = columns.find((item) =>
+    item.key === key || item.label.toLowerCase() === key.toLowerCase()
+  );
+  if (!column) {
+    return res.status(404).json({ error: "Column not found" });
+  }
+
+  column.label = parsed.data.label.trim();
+  await column.save();
+  res.json(toClientColumn(column));
+});
+
+app.delete("/columns/:key", async (req, res) => {
+  const { key } = req.params;
+  const { migrateTo } = req.query;
+  const columns = await getColumns();
+  if (columns.length <= 1) {
+    return res.status(400).json({ error: "At least one column is required" });
+  }
+
+  const column = columns.find((item) =>
+    item.key === key || item.label.toLowerCase() === key.toLowerCase()
+  );
+  if (!column) {
+    return res.status(404).json({ error: "Column not found" });
+  }
+
+  const fallback = columns.find((item) => item.key !== key);
+  const migrateKey =
+    typeof migrateTo === "string" && migrateTo
+      ? migrateTo
+      : fallback?.key;
+
+  if (!migrateKey || migrateKey === key) {
+    return res.status(400).json({ error: "Invalid migration target" });
+  }
+
+  const migrateExists = columns.some((item) => item.key === migrateKey);
+  if (!migrateExists) {
+    return res.status(400).json({ error: "Invalid migration target" });
+  }
+
+  await Task.updateMany({ status: key }, { $set: { status: migrateKey } });
+  await Column.deleteOne({ key });
+
+  res.status(204).send();
 });
 
 app.get("/tasks", async (req, res) => {
