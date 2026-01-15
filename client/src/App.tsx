@@ -33,17 +33,18 @@ type TaskDraft = {
   dueDate: string;
 };
 
+type User = {
+  id: string;
+  email: string;
+};
+
 type ThemeKey = "sunset" | "ocean" | "forest" | "nord" | "custom";
 
 type BoardStyle = "cozy" | "compact" | "focus";
 
 type VisibleCounts = Record<ColumnKey, number>;
 
-const DEFAULT_COLUMNS: Column[] = [
-  { key: "todo", label: "To-Do", hint: "Gather the next moves" },
-  { key: "in-progress", label: "In Progress", hint: "Make it real" },
-  { key: "done", label: "Done", hint: "Wrap and ship" },
-];
+const DEFAULT_COLUMNS: Column[] = [];
 
 const COLUMN_HINTS: Record<string, string> = {
   todo: "Gather the next moves",
@@ -66,6 +67,12 @@ const BOARD_STYLES: Array<{ key: BoardStyle; label: string }> = [
 ];
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+
+const fetchWithCredentials = (input: RequestInfo | URL, init?: RequestInit) =>
+  fetch(input, {
+    ...init,
+    credentials: "include",
+  });
 
 const INITIAL_BATCH = 6;
 const LOAD_BATCH = 4;
@@ -483,6 +490,126 @@ const BoardColumn = ({
   );
 };
 
+const AuthScreen = ({
+  mode,
+  form,
+  isLoading,
+  error,
+  onFormChange,
+  onSubmit,
+  onToggle,
+}: {
+  mode: "login" | "register";
+  form: { email: string; password: string };
+  isLoading: boolean;
+  error: string | null;
+  onFormChange: (next: { email: string; password: string }) => void;
+  onSubmit: () => void;
+  onToggle: () => void;
+}) => {
+  return (
+    <div className="auth">
+      <div className="auth__card">
+        <header>
+          <h1>{mode === "login" ? "Welcome back" : "Create account"}</h1>
+          <p>
+            {mode === "login"
+              ? "Sign in to keep your board in sync."
+              : "Create your account to save and organize tasks."}
+          </p>
+        </header>
+        {error ? <div className="banner">{error}</div> : null}
+        <label>
+          Email
+          <input
+            type="email"
+            value={form.email}
+            placeholder="you@example.com"
+            onChange={(event) =>
+              onFormChange({ ...form, email: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            value={form.password}
+            placeholder="At least 6 characters"
+            onChange={(event) =>
+              onFormChange({ ...form, password: event.target.value })
+            }
+          />
+        </label>
+        <button type="button" onClick={onSubmit} disabled={isLoading}>
+          {isLoading
+            ? "Please wait..."
+            : mode === "login"
+            ? "Sign in"
+            : "Sign up"}
+        </button>
+        <button type="button" className="ghost" onClick={onToggle}>
+          {mode === "login"
+            ? "Need an account? Sign up"
+            : "Already have an account? Sign in"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const OnboardingScreen = ({
+  values,
+  error,
+  isLoading,
+  onChange,
+  onSubmit,
+}: {
+  values: string[];
+  error: string | null;
+  isLoading: boolean;
+  onChange: (next: string[]) => void;
+  onSubmit: () => void;
+}) => {
+  return (
+    <div className="auth onboarding">
+      <div className="auth__card onboarding__card">
+        <header>
+          <h1>Set up your board</h1>
+          <p>Create at least three columns to get started.</p>
+        </header>
+        {error ? <div className="banner">{error}</div> : null}
+        <div className="onboarding__fields">
+          {values.map((value, index) => (
+            <label key={`column-${index}`}>
+              Column {index + 1}
+              <input
+                type="text"
+                value={value}
+                placeholder={
+                  index === 0
+                    ? "To-Do"
+                    : index === 1
+                    ? "In Progress"
+                    : "Done"
+                }
+                onChange={(event) => {
+                  const next = [...values];
+                  next[index] = event.target.value;
+                  onChange(next);
+                }}
+              />
+            </label>
+          ))}
+        </div>
+        <button type="button" onClick={onSubmit} disabled={isLoading}>
+          {isLoading ? "Creating..." : "Create columns"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const TaskModal = ({
   open,
   draft,
@@ -704,6 +831,18 @@ const ConfirmModal = ({
 
 function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [user, setUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authForm, setAuthForm] = useState({ email: "", password: "" });
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [onboardingValues, setOnboardingValues] = useState<string[]>([
+    "",
+    "",
+    "",
+  ]);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [isOnboardingLoading, setIsOnboardingLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
@@ -711,12 +850,7 @@ function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<ColumnKey | null>(null);
-  const [visibleCounts, setVisibleCounts] = useState<VisibleCounts>(() =>
-    DEFAULT_COLUMNS.reduce<Record<string, number>>((acc, column) => {
-      acc[column.key] = INITIAL_BATCH;
-      return acc;
-    }, {})
-  );
+  const [visibleCounts, setVisibleCounts] = useState<VisibleCounts>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState<TaskDraft>(emptyDraft);
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
@@ -861,13 +995,33 @@ function App() {
     );
   }, [columns]);
 
+  const loadSession = async () => {
+    try {
+      const response = await fetchWithCredentials(`${API_URL}/auth/me`);
+      if (!response.ok) {
+        setUser(null);
+        setIsLoading(false);
+        return;
+      }
+      const data: User = await response.json();
+      setUser(data);
+    } catch (err) {
+      setUser(null);
+      setIsLoading(false);
+    }
+  };
+
   const loadBoard = async () => {
     try {
       setIsLoading(true);
       const [columnsResponse, tasksResponse] = await Promise.all([
-        fetch(`${API_URL}/columns`),
-        fetch(`${API_URL}/tasks`),
+        fetchWithCredentials(`${API_URL}/columns`),
+        fetchWithCredentials(`${API_URL}/tasks`),
       ]);
+      if (columnsResponse.status === 401 || tasksResponse.status === 401) {
+        setUser(null);
+        return;
+      }
       if (!columnsResponse.ok) {
         throw new Error("Failed to load columns");
       }
@@ -878,7 +1032,7 @@ function App() {
         await columnsResponse.json()
       );
       const tasksData: Task[] = await tasksResponse.json();
-      setColumns(columnsData.length ? columnsData : DEFAULT_COLUMNS);
+      setColumns(columnsData);
       setTasks(tasksData);
       setError(null);
     } catch (err) {
@@ -889,8 +1043,106 @@ function App() {
   };
 
   useEffect(() => {
-    loadBoard();
+    loadSession();
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    loadBoard();
+  }, [user]);
+
+  const submitAuth = async () => {
+    setIsAuthLoading(true);
+    try {
+      const response = await fetchWithCredentials(
+        `${API_URL}/auth/${authMode === "login" ? "login" : "register"}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: authForm.email.trim(),
+            password: authForm.password,
+          }),
+        }
+      );
+      if (!response.ok) {
+        let message = "Authentication failed";
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const payload = await response.json();
+          if (payload && typeof payload.error === "string") {
+            message = payload.error;
+          }
+        } else {
+          const payload = await response.text();
+          if (payload) {
+            message = payload;
+          }
+        }
+        throw new Error(message);
+      }
+      const data: User = await response.json();
+      setUser(data);
+      setAuthError(null);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const logout = async () => {
+    await fetchWithCredentials(`${API_URL}/auth/logout`, { method: "POST" });
+    setUser(null);
+    setTasks([]);
+  };
+
+  const submitOnboarding = async () => {
+    const labels = onboardingValues
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (labels.length < 3) {
+      setOnboardingError("Add at least three column names.");
+      return;
+    }
+
+    setIsOnboardingLoading(true);
+    try {
+      for (const label of labels) {
+        const response = await fetchWithCredentials(`${API_URL}/columns`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label }),
+        });
+        if (!response.ok) {
+          let message = "Failed to create columns";
+          const contentType = response.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const payload = await response.json();
+            if (payload && typeof payload.error === "string") {
+              message = payload.error;
+            }
+          } else {
+            const payload = await response.text();
+            if (payload) {
+              message = payload;
+            }
+          }
+          throw new Error(message);
+        }
+      }
+      setOnboardingError(null);
+      await loadBoard();
+    } catch (err) {
+      setOnboardingError(
+        err instanceof Error ? err.message : "Something went wrong"
+      );
+    } finally {
+      setIsOnboardingLoading(false);
+    }
+  };
 
   const openCreate = () => {
     const defaultStatus = columns[0]?.key || "todo";
@@ -921,19 +1173,35 @@ function App() {
 
     setIsSaving(true);
     try {
-      const response = await fetch(`${API_URL}/tasks`, {
+      const status = columns.some((column) => column.key === draft.status)
+        ? draft.status
+        : columns[0]?.key;
+      const response = await fetchWithCredentials(`${API_URL}/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: draft.title.trim(),
           description: draft.description.trim(),
-          status: draft.status,
+          status,
           dueDate: draft.dueDate ? draft.dueDate : null,
         }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to save task");
+        let message = "Failed to save task";
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const payload = await response.json();
+          if (payload && typeof payload.error === "string") {
+            message = payload.error;
+          }
+        } else {
+          const payload = await response.text();
+          if (payload) {
+            message = payload;
+          }
+        }
+        throw new Error(message);
       }
 
       const savedTask: Task = await response.json();
@@ -963,7 +1231,7 @@ function App() {
       return;
     }
     try {
-      const response = await fetch(`${API_URL}/columns/${encodeURIComponent(columnModal.key)}`, {
+      const response = await fetchWithCredentials(`${API_URL}/columns/${encodeURIComponent(columnModal.key)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label }),
@@ -987,7 +1255,7 @@ function App() {
       return;
     }
     try {
-      const response = await fetch(
+      const response = await fetchWithCredentials(
         `${API_URL}/columns/${encodeURIComponent(
           columnModal.key
         )}?migrateTo=${encodeURIComponent(columnMigrateTo)}`,
@@ -1017,7 +1285,7 @@ function App() {
       return;
     }
     try {
-      const response = await fetch(`${API_URL}/columns`, {
+      const response = await fetchWithCredentials(`${API_URL}/columns`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label }),
@@ -1041,7 +1309,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(`${API_URL}/tasks/${id}`, {
+      const response = await fetchWithCredentials(`${API_URL}/tasks/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1071,7 +1339,7 @@ function App() {
     const previous = tasks;
     setTasks((prev) => prev.filter((task) => task.id !== id));
     try {
-      const response = await fetch(`${API_URL}/tasks/${id}`, {
+      const response = await fetchWithCredentials(`${API_URL}/tasks/${id}`, {
         method: "DELETE",
       });
       if (!response.ok && response.status !== 204) {
@@ -1089,7 +1357,7 @@ function App() {
       prev.map((task) => (task.id === id ? { ...task, status } : task))
     );
     try {
-      const response = await fetch(`${API_URL}/tasks/${id}`, {
+      const response = await fetchWithCredentials(`${API_URL}/tasks/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
@@ -1146,6 +1414,34 @@ function App() {
     });
   };
 
+  if (!user && !isLoading) {
+    return (
+      <AuthScreen
+        mode={authMode}
+        form={authForm}
+        error={authError}
+        isLoading={isAuthLoading}
+        onFormChange={(next) => setAuthForm(next)}
+        onSubmit={submitAuth}
+        onToggle={() =>
+          setAuthMode(authMode === "login" ? "register" : "login")
+        }
+      />
+    );
+  }
+
+  if (user && !isLoading && columns.length === 0) {
+    return (
+      <OnboardingScreen
+        values={onboardingValues}
+        error={onboardingError}
+        isLoading={isOnboardingLoading}
+        onChange={setOnboardingValues}
+        onSubmit={submitOnboarding}
+      />
+    );
+  }
+
   return (
     <div className={`app${draggingId ? " app--dragging" : ""}`}>
       <header className="topbar">
@@ -1154,6 +1450,9 @@ function App() {
           <span>Kanban</span>
         </div>
         <div className="topbar__actions">
+          <button type="button" className="ghost" onClick={logout}>
+            Sign out
+          </button>
           <button type="button" onClick={openCreate}>
             New task
           </button>
@@ -1218,6 +1517,12 @@ function App() {
                     Add
                   </button>
                 </div>
+              </div>
+              <div className="action-menu__section">
+                <span className="action-menu__title">Account</span>
+                <button type="button" className="ghost" onClick={logout}>
+                  Sign out
+                </button>
               </div>
               <div className="action-menu__section">
                 <span className="action-menu__title">Theme</span>

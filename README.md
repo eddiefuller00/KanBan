@@ -1,6 +1,11 @@
 # KanBan
 Lightweight Kanban task board with a React + TypeScript frontend and an Express + MongoDB backend.
 
+## MVP Highlights
+- Email/password auth (JWT in httpOnly cookie)
+- User-scoped tasks + columns
+- Onboarding flow: create at least 3 custom columns before using the board
+
 ## Setup
 
 1) Install dependencies:
@@ -22,6 +27,8 @@ npm run dev:server
 npm run dev
 ```
 
+## First Run (Onboarding)
+After signing in, you’ll be prompted to create at least 3 columns. The board stays locked until those columns are created.
 
 ## Run MongoDB Locally
 

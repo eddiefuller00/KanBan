@@ -6,6 +6,41 @@
   animation: fadeIn 0.7s ease;
 }
 
+.auth {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 3rem 6vw;
+}
+
+.auth__card {
+  width: min(420px, 90vw);
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 24px;
+  padding: 2rem;
+  box-shadow: 0 30px 60px rgba(19, 12, 4, 0.2);
+  display: grid;
+  gap: 1.2rem;
+}
+
+.auth__card header h1 {
+  margin: 0 0 0.4rem;
+}
+
+.auth__card header p {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.onboarding__card {
+  width: min(520px, 92vw);
+}
+
+.onboarding__fields {
+  display: grid;
+  gap: 0.9rem;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;

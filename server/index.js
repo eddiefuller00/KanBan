@@ -1,30 +1,50 @@
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
 const { z } = require("zod");
 require("dotenv").config();
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+const CLIENT_ORIGIN =
+  process.env.CLIENT_ORIGIN || "http://localhost:5173";
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const TOKEN_NAME = "kanban_token";
 
-const DEFAULT_COLUMNS = [
-  { key: "todo", label: "To-Do" },
-  { key: "in-progress", label: "In Progress" },
-  { key: "done", label: "Done" },
-];
+app.use(
+  cors({
+    origin: CLIENT_ORIGIN,
+    credentials: true,
+  })
+);
+app.use(express.json());
+app.use(cookieParser());
+
+const userSchema = new mongoose.Schema(
+  {
+    email: { type: String, required: true, unique: true, trim: true },
+    passwordHash: { type: String, required: true },
+  },
+  { timestamps: true }
+);
 
 const columnSchema = new mongoose.Schema(
   {
-    key: { type: String, required: true, unique: true, trim: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: "User" },
+    key: { type: String, required: true, trim: true },
     label: { type: String, required: true, trim: true },
   },
   { timestamps: true }
 );
 
+columnSchema.index({ userId: 1, key: 1 }, { unique: true });
+
 const taskSchema = new mongoose.Schema(
   {
+    userId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: "User" },
     title: { type: String, required: true, trim: true },
     description: { type: String, default: "", trim: true },
     status: { type: String, required: true },
@@ -47,6 +67,7 @@ const taskSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const User = mongoose.model("User", userSchema);
 const Column = mongoose.model("Column", columnSchema);
 const Task = mongoose.model("Task", taskSchema);
 
@@ -68,6 +89,11 @@ const dueDateSchema = z.preprocess(
     ])
     .optional()
 );
+
+const authSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+});
 
 const createTaskSchema = z.object({
   title: z.string().min(1),
@@ -117,6 +143,37 @@ const toClientColumn = (column) => ({
 
 const formatActivityDate = (date) => date.toISOString().slice(0, 10);
 
+const resolveStatusKey = (columns, status) => {
+  if (!columns.length) {
+    return null;
+  }
+  const desired = status || columns[0].key;
+  const direct = columns.find((column) => column.key === desired);
+  if (direct) {
+    return direct.key;
+  }
+  const normalize = (value) =>
+    String(value)
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)+/g, "");
+  const lowered = String(desired).toLowerCase();
+  const normalized = normalize(desired);
+  const normalizedCompact = normalized.replace(/-/g, "");
+  const byLabel = columns.find((column) => {
+    const labelLower = column.label.toLowerCase();
+    const labelNormalized = normalize(column.label);
+    const labelCompact = labelNormalized.replace(/-/g, "");
+    return (
+      labelLower === lowered ||
+      labelNormalized === normalized ||
+      labelCompact === normalizedCompact
+    );
+  });
+  return byLabel ? byLabel.key : null;
+};
+
 const slugify = (label) =>
   label
     .toLowerCase()
@@ -125,18 +182,21 @@ const slugify = (label) =>
     .replace(/(^-|-$)+/g, "")
     .slice(0, 40) || "column";
 
-const ensureDefaultColumns = async () => {
-  const count = await Column.countDocuments();
-  if (count > 0) {
-    return;
+const ensureUniqueKey = async (baseKey, userId) => {
+  let key = baseKey;
+  let suffix = 2;
+  while (await Column.exists({ userId, key })) {
+    key = `${baseKey}-${suffix}`;
+    suffix += 1;
   }
-  await Column.insertMany(DEFAULT_COLUMNS);
+  return key;
 };
 
-const getColumns = async () => Column.find().sort({ createdAt: 1 });
+const getColumns = async (userId) =>
+  Column.find({ userId }).sort({ createdAt: 1 });
 
-const getColumnMap = async () => {
-  const columns = await getColumns();
+const getColumnMap = async (userId) => {
+  const columns = await getColumns(userId);
   const map = new Map();
   columns.forEach((column) => {
     map.set(column.key, column.label);
@@ -144,41 +204,141 @@ const getColumnMap = async () => {
   return { columns, map };
 };
 
-const ensureUniqueKey = async (baseKey) => {
-  let key = baseKey;
-  let suffix = 2;
-  while (await Column.exists({ key })) {
-    key = `${baseKey}-${suffix}`;
-    suffix += 1;
-  }
-  return key;
+const createToken = (user) =>
+  jwt.sign({ sub: user._id.toString() }, JWT_SECRET, { expiresIn: "7d" });
+
+const setAuthCookie = (res, token) => {
+  res.cookie(TOKEN_NAME, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
 };
 
-app.get("/columns", async (req, res) => {
-  const columns = await getColumns();
+const clearAuthCookie = (res) => {
+  res.clearCookie(TOKEN_NAME, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+  });
+};
+
+const authRequired = async (req, res, next) => {
+  const token = req.cookies[TOKEN_NAME];
+  if (!token) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = { id: payload.sub };
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+};
+
+app.post("/auth/register", async (req, res) => {
+  try {
+    const parsed = authSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+
+    const existing = await User.findOne({ email: parsed.data.email });
+    if (existing) {
+      return res.status(409).json({ error: "Email already in use" });
+    }
+
+    const passwordHash = await bcrypt.hash(parsed.data.password, 10);
+    const user = await User.create({
+      email: parsed.data.email,
+      passwordHash,
+    });
+
+      const token = createToken(user);
+    setAuthCookie(res, token);
+    res.status(201).json({ id: user._id.toString(), email: user.email });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(409).json({ error: "Email already in use" });
+    }
+    console.error("Register error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/auth/login", async (req, res) => {
+  try {
+    const parsed = authSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+
+    const user = await User.findOne({ email: parsed.data.email });
+    if (!user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const matches = await bcrypt.compare(
+      parsed.data.password,
+      user.passwordHash
+    );
+    if (!matches) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const token = createToken(user);
+    setAuthCookie(res, token);
+    res.json({ id: user._id.toString(), email: user.email });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/auth/logout", (req, res) => {
+  clearAuthCookie(res);
+  res.status(204).send();
+});
+
+app.get("/auth/me", authRequired, async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  res.json({ id: user._id.toString(), email: user.email });
+});
+
+app.get("/columns", authRequired, async (req, res) => {
+  const columns = await getColumns(req.user.id);
   res.json(columns.map(toClientColumn));
 });
 
-app.post("/columns", async (req, res) => {
+app.post("/columns", authRequired, async (req, res) => {
   const parsed = createColumnSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
   const baseKey = slugify(parsed.data.label);
-  const key = await ensureUniqueKey(baseKey);
-  const column = await Column.create({ key, label: parsed.data.label.trim() });
+  const key = await ensureUniqueKey(baseKey, req.user.id);
+  const column = await Column.create({
+    key,
+    label: parsed.data.label.trim(),
+    userId: req.user.id,
+  });
   res.status(201).json(toClientColumn(column));
 });
 
-app.put("/columns/:key", async (req, res) => {
+app.put("/columns/:key", authRequired, async (req, res) => {
   const { key } = req.params;
   const parsed = updateColumnSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
-  const columns = await getColumns();
+  const columns = await getColumns(req.user.id);
   const column = columns.find((item) =>
     item.key === key || item.label.toLowerCase() === key.toLowerCase()
   );
@@ -191,10 +351,10 @@ app.put("/columns/:key", async (req, res) => {
   res.json(toClientColumn(column));
 });
 
-app.delete("/columns/:key", async (req, res) => {
+app.delete("/columns/:key", authRequired, async (req, res) => {
   const { key } = req.params;
   const { migrateTo } = req.query;
-  const columns = await getColumns();
+  const columns = await getColumns(req.user.id);
   if (columns.length <= 1) {
     return res.status(400).json({ error: "At least one column is required" });
   }
@@ -206,13 +366,13 @@ app.delete("/columns/:key", async (req, res) => {
     return res.status(404).json({ error: "Column not found" });
   }
 
-  const fallback = columns.find((item) => item.key !== key);
+  const fallback = columns.find((item) => item.key !== column.key);
   const migrateKey =
     typeof migrateTo === "string" && migrateTo
       ? migrateTo
       : fallback?.key;
 
-  if (!migrateKey || migrateKey === key) {
+  if (!migrateKey || migrateKey === column.key) {
     return res.status(400).json({ error: "Invalid migration target" });
   }
 
@@ -221,31 +381,37 @@ app.delete("/columns/:key", async (req, res) => {
     return res.status(400).json({ error: "Invalid migration target" });
   }
 
-  await Task.updateMany({ status: key }, { $set: { status: migrateKey } });
-  await Column.deleteOne({ key });
+  await Task.updateMany(
+    { userId: req.user.id, status: column.key },
+    { $set: { status: migrateKey } }
+  );
+  await Column.deleteOne({ userId: req.user.id, key: column.key });
 
   res.status(204).send();
 });
 
-app.get("/tasks", async (req, res) => {
-  const tasks = await Task.find().sort({ createdAt: 1 });
+app.get("/tasks", authRequired, async (req, res) => {
+  const tasks = await Task.find({ userId: req.user.id }).sort({ createdAt: 1 });
   res.json(tasks.map(toClientTask));
 });
 
-app.post("/tasks", async (req, res) => {
+app.post("/tasks", authRequired, async (req, res) => {
   const parsed = createTaskSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
-  const { columns, map } = await getColumnMap();
-  const defaultStatus = columns[0]?.key || "todo";
-  const statusKey = parsed.data.status || defaultStatus;
-  if (!map.has(statusKey)) {
+  const { columns, map } = await getColumnMap(req.user.id);
+  if (columns.length === 0) {
+    return res.status(400).json({ error: "No columns yet" });
+  }
+  const statusKey = resolveStatusKey(columns, parsed.data.status || undefined);
+  if (!statusKey || !map.has(statusKey)) {
     return res.status(400).json({ error: "Invalid column" });
   }
 
   const task = await Task.create({
+    userId: req.user.id,
     title: parsed.data.title,
     description: parsed.data.description || "",
     status: statusKey,
@@ -262,7 +428,7 @@ app.post("/tasks", async (req, res) => {
   res.status(201).json(toClientTask(task));
 });
 
-app.put("/tasks/:id", async (req, res) => {
+app.put("/tasks/:id", authRequired, async (req, res) => {
   const { id } = req.params;
   if (!mongoose.isValidObjectId(id)) {
     return res.status(400).json({ error: "Invalid task id" });
@@ -273,7 +439,7 @@ app.put("/tasks/:id", async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
-  const task = await Task.findById(id);
+  const task = await Task.findOne({ _id: id, userId: req.user.id });
   if (!task) {
     return res.status(404).json({ error: "Task not found" });
   }
@@ -304,11 +470,12 @@ app.put("/tasks/:id", async (req, res) => {
   }
 
   if ("status" in parsed.data && parsed.data.status !== task.status) {
-    const { map } = await getColumnMap();
-    if (!map.has(parsed.data.status)) {
+    const { columns, map } = await getColumnMap(req.user.id);
+    const resolvedStatus = resolveStatusKey(columns, parsed.data.status);
+    if (!resolvedStatus || !map.has(resolvedStatus)) {
       return res.status(400).json({ error: "Invalid column" });
     }
-    task.status = parsed.data.status;
+    task.status = resolvedStatus;
     task.activities.push({
       type: "status",
       message: `Moved to ${map.get(task.status)}`,
@@ -343,13 +510,13 @@ app.put("/tasks/:id", async (req, res) => {
   res.json(toClientTask(task));
 });
 
-app.delete("/tasks/:id", async (req, res) => {
+app.delete("/tasks/:id", authRequired, async (req, res) => {
   const { id } = req.params;
   if (!mongoose.isValidObjectId(id)) {
     return res.status(400).json({ error: "Invalid task id" });
   }
 
-  const task = await Task.findByIdAndDelete(id);
+  const task = await Task.findOneAndDelete({ _id: id, userId: req.user.id });
   if (!task) {
     return res.status(404).json({ error: "Task not found" });
   }
@@ -362,8 +529,7 @@ const mongoUrl = process.env.MONGO_URL || "mongodb://127.0.0.1:27017/kanban";
 
 mongoose
   .connect(mongoUrl)
-  .then(async () => {
-    await ensureDefaultColumns();
+  .then(() => {
     app.listen(port, () => {
       console.log(`API running on http://localhost:${port}`);
     });
