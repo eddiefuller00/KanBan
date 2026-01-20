@@ -519,6 +519,40 @@ button.danger {
   font-weight: 600;
 }
 
+.task__priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: rgba(32, 27, 20, 0.08);
+  color: var(--ink);
+}
+
+.task__priority--low {
+  background: rgba(84, 168, 120, 0.2);
+  color: #2e6f4c;
+}
+
+.task__priority--medium {
+  background: rgba(242, 198, 88, 0.2);
+  color: #8a6120;
+}
+
+.task__priority--high {
+  background: rgba(242, 128, 88, 0.22);
+  color: #8d3b22;
+}
+
+.task__priority--urgent {
+  background: rgba(229, 84, 80, 0.25);
+  color: #7a251d;
+}
+
 .task__due {
   background: rgba(246, 211, 148, 0.6);
   color: #5f4016;

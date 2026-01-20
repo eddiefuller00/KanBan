@@ -21,6 +21,7 @@ type Task = {
   description: string;
   status: ColumnKey;
   dueDate: string | null;
+  priority: "low" | "medium" | "high" | "urgent";
   activities: TaskActivity[];
   createdAt: string;
   updatedAt: string;
@@ -31,6 +32,7 @@ type TaskDraft = {
   description: string;
   status: ColumnKey;
   dueDate: string;
+  priority: "low" | "medium" | "high" | "urgent";
 };
 
 type User = {
@@ -82,6 +84,7 @@ const emptyDraft: TaskDraft = {
   description: "",
   status: "todo",
   dueDate: "",
+  priority: "medium",
 };
 
 const toDateInputValue = (value: string | null) => {
@@ -204,6 +207,7 @@ const toTaskDraft = (task: Task): TaskDraft => ({
   description: task.description || "",
   status: task.status,
   dueDate: toDateInputValue(task.dueDate),
+  priority: task.priority || "medium",
 });
 
 const BoardColumn = ({
@@ -425,6 +429,23 @@ const BoardColumn = ({
                       </select>
                     </label>
                   </div>
+                  <label>
+                    Priority
+                    <select
+                      value={editingDraft.priority}
+                      onChange={(event) =>
+                        onChangeDraft({
+                          ...editingDraft,
+                          priority: event.target.value as TaskDraft["priority"],
+                        })
+                      }
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="urgent">Urgent</option>
+                    </select>
+                  </label>
                   <div className="task__edit-actions">
                     <button type="button" onClick={() => onSaveDraft(task.id)}>
                       Save
@@ -469,6 +490,9 @@ const BoardColumn = ({
                     <div className="task__tags">
                       <span className="task__status">
                         {columnLabels[task.status] || task.status}
+                      </span>
+                      <span className={`task__priority task__priority--${task.priority}`}>
+                        {task.priority}
                       </span>
                       {task.dueDate ? (
                         <span className="task__due">
@@ -687,6 +711,23 @@ const TaskModal = ({
               ))}
             </select>
           </label>
+          <label>
+            Priority
+            <select
+              value={draft.priority}
+              onChange={(event) =>
+                onChange({
+                  ...draft,
+                  priority: event.target.value as TaskDraft["priority"],
+                })
+              }
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+            </select>
+          </label>
         </div>
         <footer>
           <button type="button" className="ghost" onClick={onClose}>
@@ -841,6 +882,10 @@ function App() {
     "",
     "",
   ]);
+  const [isAiOpen, setIsAiOpen] = useState(false);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
   const [isOnboardingLoading, setIsOnboardingLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -1144,6 +1189,40 @@ function App() {
     }
   };
 
+  const requestAiSummary = async () => {
+    setIsAiOpen(true);
+    setIsAiLoading(true);
+    setAiError(null);
+    setAiSummary(null);
+    try {
+      const response = await fetchWithCredentials(`${API_URL}/ai/summary`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        let message = "Failed to fetch AI summary";
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const payload = await response.json();
+          if (payload && typeof payload.error === "string") {
+            message = payload.error;
+          }
+        } else {
+          const payload = await response.text();
+          if (payload) {
+            message = payload;
+          }
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setAiSummary(data.summary || "No summary returned.");
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
   const openCreate = () => {
     const defaultStatus = columns[0]?.key || "todo";
     setDraft({ ...emptyDraft, status: defaultStatus });
@@ -1184,6 +1263,7 @@ function App() {
           description: draft.description.trim(),
           status,
           dueDate: draft.dueDate ? draft.dueDate : null,
+          priority: draft.priority,
         }),
       });
 
@@ -1317,6 +1397,7 @@ function App() {
           description: editingDraft.description.trim(),
           status: editingDraft.status,
           dueDate: editingDraft.dueDate ? editingDraft.dueDate : null,
+          priority: editingDraft.priority,
         }),
       });
 
@@ -1450,6 +1531,14 @@ function App() {
           <span>Kanban</span>
         </div>
         <div className="topbar__actions">
+          <button
+            type="button"
+            className="ghost"
+            onClick={requestAiSummary}
+            disabled={isAiLoading}
+          >
+            {isAiLoading ? "Summarizing..." : "AI summary"}
+          </button>
           <button type="button" className="ghost" onClick={logout}>
             Sign out
           </button>
@@ -1525,6 +1614,17 @@ function App() {
                 </button>
               </div>
               <div className="action-menu__section">
+                <span className="action-menu__title">AI</span>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={requestAiSummary}
+                  disabled={isAiLoading}
+                >
+                  {isAiLoading ? "Generating..." : "Generate board summary"}
+                </button>
+              </div>
+              <div className="action-menu__section">
                 <span className="action-menu__title">Theme</span>
                 <label className="theme-picker">
                   Theme
@@ -1584,6 +1684,32 @@ function App() {
         </div>
       ) : null}
 
+      {isAiOpen ? (
+        <div className="modal" role="dialog" aria-modal="true">
+          <div className="modal__backdrop" onClick={() => setIsAiOpen(false)} />
+          <div className="modal__panel">
+            <header>
+              <h2>AI summary</h2>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setIsAiOpen(false)}
+              >
+                Close
+              </button>
+            </header>
+            <div className="modal__content">
+              {isAiLoading ? (
+                <p className="modal__text">Summarizing your board...</p>
+              ) : aiError ? (
+                <div className="banner">{aiError}</div>
+              ) : (
+                <p className="modal__text">{aiSummary}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <header className="app__header">
         <div>

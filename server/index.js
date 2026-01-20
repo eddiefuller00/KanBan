@@ -12,6 +12,7 @@ const app = express();
 const CLIENT_ORIGIN =
   process.env.CLIENT_ORIGIN || "http://localhost:5173";
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TOKEN_NAME = "kanban_token";
 
 app.use(
@@ -49,6 +50,11 @@ const taskSchema = new mongoose.Schema(
     description: { type: String, default: "", trim: true },
     status: { type: String, required: true },
     dueDate: { type: Date, default: null },
+    priority: {
+      type: String,
+      enum: ["low", "medium", "high", "urgent"],
+      default: "medium",
+    },
     activities: {
       type: [
         {
@@ -100,6 +106,7 @@ const createTaskSchema = z.object({
   description: z.string().optional(),
   status: z.string().min(1).optional(),
   dueDate: dueDateSchema,
+  priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
 });
 
 const updateTaskSchema = z
@@ -108,6 +115,7 @@ const updateTaskSchema = z
     description: z.string().optional(),
     status: z.string().min(1).optional(),
     dueDate: dueDateSchema,
+    priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field must be provided",
@@ -127,6 +135,7 @@ const toClientTask = (task) => ({
   description: task.description || "",
   status: task.status,
   dueDate: task.dueDate ? task.dueDate.toISOString() : null,
+  priority: task.priority || "medium",
   activities: (task.activities || []).map((activity) => ({
     type: activity.type,
     message: activity.message,
@@ -310,6 +319,67 @@ app.get("/auth/me", authRequired, async (req, res) => {
   res.json({ id: user._id.toString(), email: user.email });
 });
 
+app.post("/ai/summary", authRequired, async (req, res) => {
+  if (!OPENAI_API_KEY) {
+    return res.status(500).json({ error: "OpenAI key not configured" });
+  }
+
+  try {
+    const tasks = await Task.find({ userId: req.user.id }).sort({ createdAt: 1 });
+    const columns = await getColumns(req.user.id);
+    const summaryInput = {
+      columns: columns.map((column) => ({ key: column.key, label: column.label })),
+      tasks: tasks.map((task) => ({
+        title: task.title,
+        description: task.description || "",
+        status: task.status,
+        dueDate: task.dueDate ? task.dueDate.toISOString().slice(0, 10) : null,
+        priority: task.priority || "medium",
+      })),
+    };
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You summarize a kanban board. Return concise bullet points: 1) a 1-2 sentence overview, 2) a prioritized top-5 task list based on priority and due date, 3) risks or overdue items. Keep it brief.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify(summaryInput),
+          },
+        ],
+        temperature: 0.4,
+        max_tokens: 350,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(502).json({ error: errorText || "AI request failed" });
+    }
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) {
+      return res.status(502).json({ error: "AI response empty" });
+    }
+
+    res.json({ summary: content.trim() });
+  } catch (error) {
+    console.error("AI summary error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 app.get("/columns", authRequired, async (req, res) => {
   const columns = await getColumns(req.user.id);
   res.json(columns.map(toClientColumn));
@@ -416,6 +486,7 @@ app.post("/tasks", authRequired, async (req, res) => {
     description: parsed.data.description || "",
     status: statusKey,
     dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
+    priority: parsed.data.priority || "medium",
     activities: [
       {
         type: "create",
@@ -479,6 +550,16 @@ app.put("/tasks/:id", authRequired, async (req, res) => {
     task.activities.push({
       type: "status",
       message: `Moved to ${map.get(task.status)}`,
+      at: new Date(),
+    });
+    hasChanges = true;
+  }
+
+  if ("priority" in parsed.data && parsed.data.priority !== task.priority) {
+    task.priority = parsed.data.priority;
+    task.activities.push({
+      type: "update",
+      message: `Priority set to ${task.priority}`,
       at: new Date(),
     });
     hasChanges = true;
